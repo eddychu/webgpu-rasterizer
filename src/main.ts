@@ -1,5 +1,27 @@
+import { mat4 } from "gl-matrix";
 import computeShaderSource from "./compute.wgsl?raw"
 import graphicsShaderSource from "./graphics.wgsl?raw"
+import { TypedArray, WebIO } from '@gltf-transform/core';
+const loadModel = async (url: string) => {
+  const io = new WebIO({ credentials: 'include' });
+  const document = await io.read(url);
+  const model = document.getRoot();
+  const positions = model.listMeshes()[0].listPrimitives()[0].getAttribute('POSITION')?.getArray() as Float32Array;
+  const uvs = model.listMeshes()[0].listPrimitives()[0].getAttribute('TEXCOORD_0')?.getArray() as Float32Array;
+  const normals = model.listMeshes()[0].listPrimitives()[0].getAttribute('NORMAL')?.getArray() as Float32Array;
+  const indices = model.listMeshes()[0].listPrimitives()[0].getIndices()?.getArray() as TypedArray;
+
+  return [
+    positions,
+    normals,
+    uvs,
+    new Uint32Array(indices)
+  ];
+}
+
+await loadModel("public/helmet/DamagedHelmet.gltf");
+
+
 const init = async () => {
   // check if gpu is available
   if (!navigator.gpu) {
@@ -24,33 +46,84 @@ const init = async () => {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
   });
 
+  const depthBufferData = new Float32Array(width * height);
+  const depthBuffer = device.createBuffer({
+    size: depthBufferData.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+  });
+
+  // initialize depth buffer with 1.0;
+
+  depthBufferData.fill(1.0);
+  device.queue.writeBuffer(depthBuffer, 0, depthBufferData);
+
   const readBuffer = device.createBuffer({
     size: colorBufferSize,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
   });
 
-  const vertices = new Float32Array([
-    10, 10,
-    10, 80,
-    80, 10
-  ]);
-  const numVertices = vertices.length / 2;
+  // const vertices = new Float32Array([
+  //   -0.5, -0.5, 0.0,
+  //   0.5, -0.5, 0.0,
+  //   0.0, 0.5, 0.0
+  // ]);
+  const [vertices, normals, uvs, indices] = await loadModel("public/helmet/DamagedHelmet.gltf");
+  console.log(indices);
+  const numVertices = vertices.length / 3;
   const vertexBuffer = device.createBuffer({
     size: vertices.byteLength,
-    usage: GPUBufferUsage.STORAGE,
-    mappedAtCreation: true
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
   });
-  new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
-  vertexBuffer.unmap();
+  // new Float32Array(vertexBuffer.getMappedRange()).set(vertices);
+  // vertexBuffer.unmap();
 
-  const computeUniformBufferSize = 4 * 2;
+  device.queue.writeBuffer(vertexBuffer, 0, vertices);
+
+  const indexBuffer = device.createBuffer({
+    size: indices.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  device.queue.writeBuffer(indexBuffer, 0, indices);
+
+  const uvBuffer = device.createBuffer({
+    size: uvs.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  });
+
+  device.queue.writeBuffer(uvBuffer, 0, uvs);
+
+  const normalBuffer = device.createBuffer({
+    size: normals.byteLength,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+  })
+  device.queue.writeBuffer(normalBuffer, 0, normals);
+
+  const viewMatrix = mat4.create();
+  const projectionMatrix = mat4.create();
+
+  mat4.lookAt(viewMatrix, [0, 0, 5], [0, 0, 0], [0, 1, 0]);
+
+  mat4.perspective(projectionMatrix, Math.PI / 2, 1, 0.1, 100);
+
+  const mvp = mat4.create();
+
+  mat4.multiply(mvp, projectionMatrix, viewMatrix);
+
+  const uniformData = new Float32Array([...mvp, width, height, 0, 0]);
+  // a 4 * 16 matrix for the projection matrix
+  // a 4 * 2 for the width and height
+  // a 8 for the padding requirement
+  const computeUniformBufferSize = 4 * 16 + 4 * 2 + 8;
   const computeUniformBuffer = device.createBuffer({
     size: computeUniformBufferSize,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     mappedAtCreation: true,
   });
-  new Float32Array(computeUniformBuffer.getMappedRange()).set([width, height]);
+  new Float32Array(computeUniformBuffer.getMappedRange()).set(uniformData);
   computeUniformBuffer.unmap();
+
+
 
   // create bind group layout
   const bindGroupLayout = device.createBindGroupLayout({
@@ -77,6 +150,34 @@ const init = async () => {
           type: "uniform",
         },
       },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: {
+          type: "read-only-storage",
+        },
+      },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: {
+          type: "read-only-storage",
+        },
+      },
+      {
+        binding: 5,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: {
+          type: "read-only-storage",
+        },
+      },
+      {
+        binding: 6,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: {
+          type: "storage",
+        },
+      }
     ]
   });
 
@@ -100,6 +201,30 @@ const init = async () => {
         resource: {
           buffer: computeUniformBuffer
         }
+      },
+      {
+        binding: 3,
+        resource: {
+          buffer: indexBuffer
+        }
+      },
+      {
+        binding: 4,
+        resource: {
+          buffer: uvBuffer
+        }
+      },
+      {
+        binding: 5,
+        resource: {
+          buffer: normalBuffer,
+        }
+      },
+      {
+        binding: 6,
+        resource: {
+          buffer: depthBuffer,
+        }
       }
     ]
   });
@@ -118,7 +243,7 @@ const init = async () => {
 
   passEncoder.setBindGroup(0, bindGroup);
 
-  passEncoder.dispatchWorkgroups(1);
+  passEncoder.dispatchWorkgroups(Math.ceil(indices.length / 3 / 256));
 
   passEncoder.end();
 
