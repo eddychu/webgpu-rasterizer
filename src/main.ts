@@ -386,22 +386,6 @@ const init = async () => {
     requestAnimationFrame(render);
   }
 
-
-
-
-  // wait for the GPU to finish
-
-  // await readBuffer.mapAsync(GPUMapMode.READ);
-
-  // const arrayBuffer = readBuffer.getMappedRange();
-
-  // const data = arrayBuffer.slice(0);
-
-  // readBuffer.unmap();
-
-  // console.log(new Uint32Array(data));
-
-
   render();
 
 }
