@@ -81,16 +81,26 @@ fn viewport(v: vec4<f32>) -> vec4<f32> {
   return vec4<f32>(x, y, v.z, v.w);
 }
 
+fn not_clipped(v1: vec4<f32>, v2: vec4<f32>, v3: vec4<f32>) -> bool {
+  
+  let inside1 = v1.x >= -v1.w && v1.x <= v1.w && v1.y >= -v1.w && v1.y <= v1.w && v1.z >= 0 && v1.z <= v1.w;
+  let inside2 = v2.x >= -v2.w && v2.x <= v2.w && v2.y >= -v2.w && v2.y <= v2.w && v2.z >= 0 && v2.z <= v2.w;
+  let inside3 = v3.x >= -v3.w && v3.x <= v3.w && v3.y >= -v3.w && v3.y <= v3.w && v3.z >= 0 && v3.z <= v3.w;
+
+  return inside1 && inside2 && inside3;
+} 
+
 fn is_back(v1: vec2<f32>, v2: vec2<f32>, v3: vec2<f32>) -> bool {
 
+  let xa = v1.x;
+  let xb = v2.x;
+  let xc = v3.x;
 
-  let v1v2 = v2 - v1;
-  let v2v3 = v3 - v2;
+  let ya = v1.y;
+  let yb = v2.y;
+  let yc = v3.y;
 
-  let cross = v1v2.x * v2v3.y - v1v2.y * v2v3.x;
-
-  return cross > 0.00001;
-  
+  return xa * (yb - yc) + xb * (yc - ya) + xc * (ya - yb) >= 0.0;
 }
 
 fn barycentric(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, p: vec2<f32>) -> vec3<f32> {
@@ -151,9 +161,17 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
   normal2_vec = normal2_vec * 0.5 + 0.5;
   normal3_vec = normal3_vec * 0.5 + 0.5;
 
-  let v1s = viewport(perspective_divide(vertex(point1)));
-  let v2s = viewport(perspective_divide(vertex(point2)));
-  let v3s = viewport(perspective_divide(vertex(point3)));
+  let clip_coord1 = vertex(point1);
+  let clip_coord2 = vertex(point2);
+  let clip_coord3 = vertex(point3);
+
+  if (!not_clipped(clip_coord1, clip_coord2, clip_coord3)) {
+    return;
+  }
+
+  let v1s = viewport(perspective_divide(clip_coord1));
+  let v2s = viewport(perspective_divide(clip_coord2));
+  let v3s = viewport(perspective_divide(clip_coord3));
 
   if (!is_back(v1s.xy, v2s.xy, v3s.xy)) {
     let minX = min(v1s.x, min(v2s.x, v3s.x));
@@ -161,8 +179,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let maxX = max(v1s.x, max(v2s.x, v3s.x));
     let maxY = max(v1s.y, max(v2s.y, v3s.y));
 
-    for (var x = u32(floor(minX)); x <= u32(ceil(maxX)); x = x + 1) {
-      for (var y = u32(floor(minY)); y <= u32(ceil(maxY)); y = y + 1) {
+    for (var x = u32(floor(minX)); x < u32(ceil(maxX)); x = x + 1) {
+      for (var y = u32(floor(minY)); y < u32(ceil(maxY)); y = y + 1) {
         let p = vec2<f32>(f32(x) + 0.5, f32(y) + 0.5);
         var bc = barycentric(vec2<f32>(v1s.x, v1s.y), vec2<f32>(v2s.x, v2s.y), vec2<f32>(v3s.x, v3s.y), p);
         if (bc.x < 0.0 || bc.y < 0.0 || bc.z < 0.0) {
@@ -170,13 +188,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
         // convert barycentric coordiante to perspective correct one
         bc = perspective_correct_barycentric(bc, vec3<f32>(v1s.w, v2s.w, v3s.w));
-
-        // interpolate depth
-
-
         let depth = v1s.z * bc.x + v2s.z * bc.y + v3s.z * bc.z;
         // convert depth to u32 by multiplying max of u32
-        let depth_uint = u32(depth * 4294967295.0);
+        let depth_uint = u32(floor(depth * 4294967296.0));
         let depth_index = y * u32(uniforms.screenWidth) + x;
 
         let ret_depth = atomicMin(&depthBuffer[depth_index], depth_uint);

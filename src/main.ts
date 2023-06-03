@@ -41,9 +41,10 @@ const init = async () => {
   const height = 800;
   const channels = 3;
   const colorBufferSize = width * height * Uint32Array.BYTES_PER_ELEMENT * channels;
+  const colorBufferData = new Uint32Array(width * height * channels);
   const colorBuffer = device.createBuffer({
     size: colorBufferSize,
-    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
   });
 
   const depthBufferData = new Uint32Array(width * height);
@@ -53,8 +54,7 @@ const init = async () => {
   });
 
   // initialize depth buffer with max value of u32
-  depthBufferData.fill(4294967295);
-  device.queue.writeBuffer(depthBuffer, 0, depthBufferData);
+
 
   const readBuffer = device.createBuffer({
     size: colorBufferSize,
@@ -100,16 +100,17 @@ const init = async () => {
 
   const viewMatrix = mat4.create();
   const projectionMatrix = mat4.create();
-
+  const modelMatrix = mat4.create();
+  const mvp = mat4.create();
   mat4.lookAt(viewMatrix, [0, 0, 3], [0, 0, 0], [0, 1, 0]);
 
   mat4.perspective(projectionMatrix, Math.PI / 2, 1, 0.1, 100);
 
-  const mvp = mat4.create();
+
 
   mat4.multiply(mvp, projectionMatrix, viewMatrix);
 
-  const uniformData = new Float32Array([...mvp, width, height, 0, 0]);
+
   // a 4 * 16 matrix for the projection matrix
   // a 4 * 2 for the width and height
   // a 8 for the padding requirement
@@ -117,10 +118,7 @@ const init = async () => {
   const computeUniformBuffer = device.createBuffer({
     size: computeUniformBufferSize,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    mappedAtCreation: true,
   });
-  new Float32Array(computeUniformBuffer.getMappedRange()).set(uniformData);
-  computeUniformBuffer.unmap();
 
 
 
@@ -229,39 +227,13 @@ const init = async () => {
   });
 
 
+
+
   const computePipeline = device.createComputePipeline({
     layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
     compute: { module: computeShaderModule, entryPoint: "main" }
   });
 
-  const commandEncoder = device.createCommandEncoder();
-
-  const passEncoder = commandEncoder.beginComputePass();
-
-  passEncoder.setPipeline(computePipeline);
-
-  passEncoder.setBindGroup(0, bindGroup);
-
-  passEncoder.dispatchWorkgroups(Math.ceil(indices.length / 3 / 256));
-
-  passEncoder.end();
-
-  commandEncoder.copyBufferToBuffer(colorBuffer, 0, readBuffer, 0, colorBufferSize);
-
-  device.queue.submit([commandEncoder.finish()]);
-
-
-  // wait for the GPU to finish
-
-  await readBuffer.mapAsync(GPUMapMode.READ);
-
-  const arrayBuffer = readBuffer.getMappedRange();
-
-  const data = arrayBuffer.slice(0);
-
-  readBuffer.unmap();
-
-  console.log(new Uint32Array(data));
 
   const canvas = document.getElementById("mycanvas") as HTMLCanvasElement;
 
@@ -351,30 +323,86 @@ const init = async () => {
   });
 
 
-  const currentTexture = ctx.getCurrentTexture();
-  device.queue.writeBuffer(uniformBuffer, 0, new Float32Array([width, height]));
 
-  const renderPassDescriptor: GPURenderPassDescriptor = {
-    colorAttachments: [
-      {
-        view: currentTexture.createView(),
-        clearValue: [1.0, 0.0, 0.0, 1.0],
-        loadOp: "clear",
-        storeOp: "store"
-      }
-    ]
-  };
+  let frames = 0;
+  const render = () => {
+    frames++;
 
-  const renderCommandEncoder = device.createCommandEncoder();
-  const renderPass = renderCommandEncoder.beginRenderPass(renderPassDescriptor);
+    colorBufferData.fill(0);
+    device.queue.writeBuffer(colorBuffer, 0, colorBufferData);
 
-  renderPass.setPipeline(graphicsPipeline);
-  renderPass.setBindGroup(0, graphicsBindGroup);
-  renderPass.draw(6, 1, 0, 0);
+    depthBufferData.fill(4294967295);
 
-  renderPass.end();
+    device.queue.writeBuffer(depthBuffer, 0, depthBufferData);
+    mat4.rotateY(modelMatrix, mat4.create(), 0.01);
 
-  device.queue.submit([renderCommandEncoder.finish()]);
+    mat4.multiply(mvp, mvp, modelMatrix);
+
+    const uniformData = new Float32Array([...mvp, width, height, 0, 0]);
+
+    device.queue.writeBuffer(computeUniformBuffer, 0, uniformData);
+
+    const commandEncoder = device.createCommandEncoder();
+
+    const passEncoder = commandEncoder.beginComputePass();
+
+    passEncoder.setPipeline(computePipeline);
+
+    passEncoder.setBindGroup(0, bindGroup);
+
+    passEncoder.dispatchWorkgroups(Math.ceil(indices.length / 3 / 256));
+
+    passEncoder.end();
+
+    commandEncoder.copyBufferToBuffer(colorBuffer, 0, readBuffer, 0, colorBufferSize);
+
+    device.queue.submit([commandEncoder.finish()]);
+
+    const currentTexture = ctx.getCurrentTexture();
+    device.queue.writeBuffer(uniformBuffer, 0, new Float32Array([width, height]));
+
+    const renderPassDescriptor: GPURenderPassDescriptor = {
+      colorAttachments: [
+        {
+          view: currentTexture.createView(),
+          clearValue: [1.0, 0.0, 0.0, 1.0],
+          loadOp: "clear",
+          storeOp: "store"
+        }
+      ]
+    };
+
+    const renderCommandEncoder = device.createCommandEncoder();
+    const renderPass = renderCommandEncoder.beginRenderPass(renderPassDescriptor);
+
+    renderPass.setPipeline(graphicsPipeline);
+    renderPass.setBindGroup(0, graphicsBindGroup);
+    renderPass.draw(6, 1, 0, 0);
+
+    renderPass.end();
+
+    device.queue.submit([renderCommandEncoder.finish()]);
+
+    requestAnimationFrame(render);
+  }
+
+
+
+
+  // wait for the GPU to finish
+
+  // await readBuffer.mapAsync(GPUMapMode.READ);
+
+  // const arrayBuffer = readBuffer.getMappedRange();
+
+  // const data = arrayBuffer.slice(0);
+
+  // readBuffer.unmap();
+
+  // console.log(new Uint32Array(data));
+
+
+  render();
 
 }
 
