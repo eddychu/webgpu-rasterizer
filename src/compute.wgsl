@@ -38,7 +38,7 @@ struct Uniform {
 @group(0) @binding(3) var<storage, read> indexBuffer: array<u32>;
 @group(0) @binding(4) var<storage, read> uvBuffer: array<vec2<f32>>;
 @group(0) @binding(5) var<storage, read> normalBuffer: VertexBuffer;
-@group(0) @binding(6) var<storage, read_write> depthBuffer: array<f32>;
+@group(0) @binding(6) var<storage, read_write> depthBuffer: array<atomic<u32>>;
 // this is the uniform buffer that we will pass to the shader.
 
 
@@ -72,7 +72,7 @@ fn vertex(v: Vertex) -> vec4<f32> {
 } 
 
 fn perspective_divide(v: vec4<f32>) -> vec4<f32> {
-  return vec4<f32>(v.x / v.w, v.y / v.w, v.z / v.w, v.w);
+  return vec4<f32>(v.x / v.w, v.y / v.w, v.z / v.w, 1.0 / v.w);
 }
 
 fn viewport(v: vec4<f32>) -> vec4<f32> {
@@ -89,8 +89,8 @@ fn is_back(v1: vec2<f32>, v2: vec2<f32>, v3: vec2<f32>) -> bool {
 
   let cross = v1v2.x * v2v3.y - v1v2.y * v2v3.x;
 
-  // return cross < 0.0;
-  return false;
+  return cross > 0.00001;
+  
 }
 
 fn barycentric(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, p: vec2<f32>) -> vec3<f32> {
@@ -113,6 +113,11 @@ fn barycentric(a: vec2<f32>, b: vec2<f32>, c: vec2<f32>, p: vec2<f32>) -> vec3<f
     return vec3<f32>(u, v, w);
 }
 
+fn perspective_correct_barycentric(bc: vec3<f32>, w: vec3<f32>) -> vec3<f32> {
+  let numerator = vec3<f32>(bc.x / w.x, bc.y / w.y, bc.z / w.z);
+  let denominator = numerator.x + numerator.y + numerator.z;
+  return vec3<f32>(numerator.x / denominator, numerator.y / denominator, numerator.z / denominator);
+}
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -156,38 +161,35 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let maxX = max(v1s.x, max(v2s.x, v3s.x));
     let maxY = max(v1s.y, max(v2s.y, v3s.y));
 
-    for (var x = u32(floor(minX)); x < u32(ceil(maxX)); x = x + 1) {
-      for (var y = u32(floor(minY)); y < u32(ceil(maxY)); y = y + 1) {
+    for (var x = u32(floor(minX)); x <= u32(ceil(maxX)); x = x + 1) {
+      for (var y = u32(floor(minY)); y <= u32(ceil(maxY)); y = y + 1) {
         let p = vec2<f32>(f32(x) + 0.5, f32(y) + 0.5);
-        let bc = barycentric(vec2<f32>(v1s.x, v1s.y), vec2<f32>(v2s.x, v2s.y), vec2<f32>(v3s.x, v3s.y), p);
+        var bc = barycentric(vec2<f32>(v1s.x, v1s.y), vec2<f32>(v2s.x, v2s.y), vec2<f32>(v3s.x, v3s.y), p);
         if (bc.x < 0.0 || bc.y < 0.0 || bc.z < 0.0) {
           continue;
         }
+        // convert barycentric coordiante to perspective correct one
+        bc = perspective_correct_barycentric(bc, vec3<f32>(v1s.w, v2s.w, v3s.w));
+
+        // interpolate depth
+
+
         let depth = v1s.z * bc.x + v2s.z * bc.y + v3s.z * bc.z;
+        // convert depth to u32 by multiplying max of u32
+        let depth_uint = u32(depth * 4294967295.0);
         let depth_index = y * u32(uniforms.screenWidth) + x;
-        if (depth > depthBuffer[depth_index]) {
+
+        let ret_depth = atomicMin(&depthBuffer[depth_index], depth_uint);
+
+        if ret_depth <= depth_uint {
           continue;
         }
-        depthBuffer[depth_index] = depth;
-
-        // interpolate normal
         let n = normal1_vec * bc.x + normal2_vec * bc.y + normal3_vec * bc.z;
         let r = u32(n.x * 255.0);
         let g = u32(n.y * 255.0);
         let b = u32(n.z * 255.0);
-
         draw_pixel(x, y, r, g, b);
       }
     }
   }
-
-  
-
-  // let v1 = vec2<f32>(v1s.x, v1s.y);
-  // let v2 = vec2<f32>(v2s.x, v2s.y);
-  // let v3 = vec2<f32>(v3s.x, v3s.y);
-
-  // draw_line(v1, v2);
-  // draw_line(v2, v3);
-  // draw_line(v3, v1);
 }

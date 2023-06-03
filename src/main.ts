@@ -46,15 +46,14 @@ const init = async () => {
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
   });
 
-  const depthBufferData = new Float32Array(width * height);
+  const depthBufferData = new Uint32Array(width * height);
   const depthBuffer = device.createBuffer({
     size: depthBufferData.byteLength,
     usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
   });
 
-  // initialize depth buffer with 1.0;
-
-  depthBufferData.fill(1.0);
+  // initialize depth buffer with max value of u32
+  depthBufferData.fill(4294967295);
   device.queue.writeBuffer(depthBuffer, 0, depthBufferData);
 
   const readBuffer = device.createBuffer({
@@ -102,7 +101,7 @@ const init = async () => {
   const viewMatrix = mat4.create();
   const projectionMatrix = mat4.create();
 
-  mat4.lookAt(viewMatrix, [0, 0, 5], [0, 0, 0], [0, 1, 0]);
+  mat4.lookAt(viewMatrix, [0, 0, 3], [0, 0, 0], [0, 1, 0]);
 
   mat4.perspective(projectionMatrix, Math.PI / 2, 1, 0.1, 100);
 
@@ -251,6 +250,9 @@ const init = async () => {
 
   device.queue.submit([commandEncoder.finish()]);
 
+
+  // wait for the GPU to finish
+
   await readBuffer.mapAsync(GPUMapMode.READ);
 
   const arrayBuffer = readBuffer.getMappedRange();
@@ -265,6 +267,9 @@ const init = async () => {
 
   canvas.width = width;
   canvas.height = height;
+
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
 
   const ctx = canvas.getContext("webgpu") as GPUCanvasContext;
 
